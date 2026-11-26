@@ -59,7 +59,7 @@ use language::{
     proto::{deserialize_version, serialize_version},
 };
 use parking_lot::Mutex;
-use paths::{config_dir, home_dir};
+use paths::home_dir;
 use pending_op::{PendingOp, PendingOpId, PendingOps, PendingOpsSummary};
 use postage::stream::Stream as _;
 use rpc::{
@@ -74,7 +74,7 @@ use std::{
     cell::RefCell,
     cmp::Ordering,
     collections::{BTreeSet, HashSet, VecDeque, hash_map::Entry},
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     future::Future,
     mem,
     ops::Range,
@@ -1062,7 +1062,7 @@ impl GitStore {
             Box::new([])
         } else {
             [
-                config_dir().join("git/config"),
+                git_xdg_config_path(std::env::var_os("XDG_CONFIG_HOME")),
                 home_dir().join(".gitconfig"),
             ]
             .into_iter()
@@ -1264,6 +1264,21 @@ impl GitStore {
 
     pub fn is_local(&self) -> bool {
         matches!(self.state, GitStoreState::Local { .. })
+    }
+
+    pub fn rescan_after_global_config_write(&mut self, cx: &mut Context<Self>) {
+        let GitStoreState::Local { downstream, .. } = &self.state else {
+            return;
+        };
+        let updates_tx = downstream
+            .as_ref()
+            .map(|downstream| downstream.updates_tx.clone());
+        for repository in self.repositories.values() {
+            repository.update(cx, |repository, cx| {
+                repository.schedule_scan(updates_tx.clone(), cx);
+            });
+        }
+        cx.emit(GitStoreEvent::GlobalConfigurationUpdated);
     }
 
     fn set_active_repo_id(&mut self, repo_id: RepositoryId, cx: &mut Context<Self>) {
@@ -11824,6 +11839,15 @@ async fn append_pattern_to_ignore_file(
     .await
 }
 
+fn git_xdg_config_path(xdg_config_home: Option<OsString>) -> PathBuf {
+    xdg_config_home
+        .filter(|config_home| !config_home.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".config"))
+        .join("git")
+        .join("config")
+}
+
 #[cfg(any(test, feature = "test-support"))]
 impl Repository {
     pub fn set_branch_list_for_test(&mut self, branches: Vec<Branch>, cx: &mut Context<Self>) {
@@ -13828,6 +13852,71 @@ mod tests {
         ]));
 
         assert_eq!(coalesced, repo_paths(&["src", "tests/test.rs"]));
+    }
+
+    #[gpui::test]
+    async fn test_rescan_after_global_config_write(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            util::path!("/project"),
+            json!({
+                ".git": {},
+                "a.txt": "a",
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [Path::new(util::path!("/project"))], cx).await;
+        cx.run_until_parked();
+        let repository =
+            project.read_with(cx, |project, cx| project.active_repository(cx).unwrap());
+        let statuses = |cx: &mut TestAppContext| {
+            repository.read_with(cx, |repository, _| {
+                repository
+                    .status()
+                    .map(|entry| entry.status)
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(statuses(cx), [FileStatus::Untracked]);
+
+        fs.with_git_state(Path::new(util::path!("/project/.git")), false, |state| {
+            state
+                .head_contents
+                .insert(repo_path("a.txt"), b"a".to_vec());
+            state
+                .index_contents
+                .insert(repo_path("a.txt"), b"a".to_vec());
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(statuses(cx), [FileStatus::Untracked]);
+
+        project.update(cx, |project, cx| {
+            project.git_store().update(cx, |git_store, cx| {
+                git_store.rescan_after_global_config_write(cx)
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(statuses(cx), Vec::new());
+    }
+
+    #[test]
+    fn test_git_xdg_config_path() {
+        let default_path = home_dir().join(".config").join("git").join("config");
+        assert_eq!(
+            [
+                Some(OsString::from(util::path!("/xdg"))),
+                Some(OsString::new()),
+                None,
+            ]
+            .map(git_xdg_config_path),
+            [
+                Path::new(util::path!("/xdg")).join("git").join("config"),
+                default_path.clone(),
+                default_path,
+            ],
+        );
     }
 
     #[test]

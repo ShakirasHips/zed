@@ -5362,8 +5362,18 @@ impl GitPanel {
             }
             None => Task::ready(Err(anyhow::anyhow!("{path:?} is not a valid UTF-8 path"))),
         };
-        cx.spawn(async move |git_panel, cx| {
-            if let Err(error) = git_config.await {
+        cx.spawn(async move |git_panel, cx| match git_config.await {
+            Ok(_) => {
+                git_panel
+                    .update(cx, |git_panel, cx| {
+                        let git_store = git_panel.project.read(cx).git_store().clone();
+                        git_store.update(cx, |git_store, cx| {
+                            git_store.rescan_after_global_config_write(cx)
+                        });
+                    })
+                    .ok();
+            }
+            Err(error) => {
                 log::error!("Error while adding a safe directory: {error:?}");
                 git_panel
                     .update(cx, |git_panel, cx| {
@@ -18867,8 +18877,8 @@ mod tests {
         })
         .unwrap();
         let git_store = project.read_with(&cx, |project, _| project.git_store().clone());
-        git_store.update(&mut cx, |_, cx| {
-            cx.emit(GitStoreEvent::GlobalConfigurationUpdated)
+        git_store.update(&mut cx, |git_store, cx| {
+            git_store.rescan_after_global_config_write(cx)
         });
         await_git_panel_entries(&panel, &mut cx).await;
         cx.run_until_parked();
