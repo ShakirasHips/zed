@@ -705,6 +705,7 @@ pub fn execute_run(
         None
     };
     let log_rx = init_logging_server(&log_file)?;
+    util::remove_unbalanced_path_quotes_on_windows();
     log::info!(
         "starting up with PID {}:\npid_file: {:?}, log_file: {:?}, stdin_socket: {:?}, stdout_socket: {:?}, stderr_socket: {:?}",
         pid,

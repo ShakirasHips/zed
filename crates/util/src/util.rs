@@ -425,6 +425,23 @@ pub async fn load_login_shell_environment() -> Result<()> {
     Ok(())
 }
 
+pub fn remove_unbalanced_path_quotes_on_windows() {
+    if !cfg!(windows) {
+        return;
+    }
+    if let Some(path_var) = std::env::var("PATH")
+        .ok()
+        .and_then(|path_var| path_var_without_unbalanced_quotes(&path_var))
+    {
+        log::warn!("PATH has an unbalanced double quote, ignoring all double quotes in it");
+        unsafe { std::env::set_var("PATH", path_var) };
+    }
+}
+
+fn path_var_without_unbalanced_quotes(path_var: &str) -> Option<String> {
+    (path_var.matches('"').count() % 2 == 1).then(|| path_var.replace('"', ""))
+}
+
 /// Configures the process to start a new session, to prevent interactive shells from taking control
 /// of the terminal.
 ///
@@ -1486,6 +1503,43 @@ Line 3"#
                     "scalar": 20,
                 },
             })
+        );
+    }
+
+    #[test]
+    fn test_path_var_without_unbalanced_quotes() {
+        assert_eq!(
+            [
+                r#"C:\Program Files\Tailscale";C:\Program Files\Git\cmd"#,
+                r#""C:\some;dir";C:\Program Files\Git\cmd"#,
+                r"C:\Program Files\Git\cmd",
+            ]
+            .map(path_var_without_unbalanced_quotes),
+            [
+                Some(r"C:\Program Files\Tailscale;C:\Program Files\Git\cmd".to_owned()),
+                None,
+                None,
+            ],
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_split_paths_after_removing_unbalanced_quotes() {
+        let path_var = r#"C:\Program Files\Tailscale";C:\Program Files\Git\cmd"#;
+        assert_eq!(
+            std::env::split_paths(path_var).collect::<Vec<_>>(),
+            [PathBuf::from(
+                r"C:\Program Files\Tailscale;C:\Program Files\Git\cmd"
+            )],
+        );
+        assert_eq!(
+            std::env::split_paths(&path_var_without_unbalanced_quotes(path_var).unwrap())
+                .collect::<Vec<_>>(),
+            [
+                PathBuf::from(r"C:\Program Files\Tailscale"),
+                PathBuf::from(r"C:\Program Files\Git\cmd"),
+            ],
         );
     }
 }

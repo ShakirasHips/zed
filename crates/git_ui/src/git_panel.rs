@@ -5935,7 +5935,9 @@ impl GitPanel {
                 // request may never resolve (for example, a collab host that
                 // doesn't know about `LoadCommitTemplate`) and must not block the
                 // commit editor from attaching to the shared buffer.
-                let buffer = load_buffer.await?;
+                let Some(buffer) = load_buffer.await? else {
+                    return Ok(());
+                };
                 git_panel.update_in(cx, |git_panel, window, cx| {
                     if git_panel
                         .commit_editor
@@ -9816,7 +9818,7 @@ impl GitPanel {
         };
         repo.update(cx, |repo, cx| {
             let rx = repo.load_commit_template_text();
-            cx.spawn(async move |_, _| rx.await?)
+            cx.background_spawn(async move { rx.await.unwrap_or(Ok(None)) })
         })
     }
 

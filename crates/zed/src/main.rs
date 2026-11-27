@@ -312,6 +312,8 @@ fn main() {
     #[cfg(unix)]
     util::increase_open_file_limit().log_err();
 
+    util::remove_unbalanced_path_quotes_on_windows();
+
     let version = option_env!("ZED_BUILD_ID");
     let app_commit_sha =
         option_env!("ZED_COMMIT_SHA").map(|commit_sha| AppCommitSha::new(commit_sha.to_string()));
